@@ -43,6 +43,10 @@ type Block struct {
 
 var Blockchain []Block
 
+var Peer struct {
+	Address string
+}
+
 var mutex = &sync.Mutex{}
 
 func calculateHash(block Block) string {
@@ -228,7 +232,8 @@ func readData(rw *bufio.ReadWriter) {
 	for {
 		str, err := rw.ReadString('\n')
 		if err != nil {
-			log.Fatal(err)
+			log.Println("Lost a stream")
+			break
 		}
 
 		if str == "" {
@@ -274,7 +279,6 @@ func writeData(rw *bufio.ReadWriter) {
 			rw.WriteString(fmt.Sprintf("%s\n", string(bytes)))
 			rw.Flush()
 			mutex.Unlock()
-
 		}
 	}()
 
@@ -332,15 +336,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("EAT SHIT")
 
 	// Create Genesis block
 	t := time.Now()
 	genesisBlock := Block{0, t.String(), "ThornChain", "Thornton Personal", 1000000, "", ""}
 	spew.Dump(genesisBlock)
 	Blockchain = append(Blockchain, genesisBlock)
-
-	log.Println("Continuation")
 
 	// Set the verbosity of the libp2p logging
 	golog.SetAllLoggers(gologging.INFO)
