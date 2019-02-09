@@ -14,6 +14,7 @@ import (
 	mrand "math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,11 +44,18 @@ type Block struct {
 
 var Blockchain []Block
 
-var Peer struct {
-	Address string
-}
+var PeerStore []string
 
 var mutex = &sync.Mutex{}
+
+func stringInSlice(a string, list []string) bool {
+	for _, b := range list {
+		if b == a {
+			return true
+		}
+	}
+	return false
+}
 
 func calculateHash(block Block) string {
 	record := string(block.Index) + block.Timestamp + string(block.From) + string(block.To) + string(block.Amount) + block.PrevHash
@@ -240,10 +248,24 @@ func readData(rw *bufio.ReadWriter) {
 			return
 		}
 		if str != "\n" {
-
 			chain := make([]Block, 0)
-			if err := json.Unmarshal([]byte(str), &chain); err != nil {
+			newPeerStore := make([]string, 0)
+
+			split := strings.Split(str, "zyx")
+			if err := json.Unmarshal([]byte(split[0]), &chain); err != nil {
 				log.Fatal(err)
+			}
+
+			if split[1] != "invalid\n" {
+				if err := json.Unmarshal([]byte(split[1]), &newPeerStore); err != nil {
+					log.Fatal(err)
+				}
+
+				for _, peer := range newPeerStore {
+					if !stringInSlice(peer, PeerStore) {
+						PeerStore = append(PeerStore, peer)
+					}
+				}
 			}
 
 			mutex.Lock()
@@ -273,10 +295,24 @@ func writeData(rw *bufio.ReadWriter) {
 			if err != nil {
 				log.Println(err)
 			}
+			var PeerBytes []byte
+			if len(PeerStore) > 0 {
+				log.Println(PeerStore)
+				PeerBytes, err = json.Marshal(PeerStore)
+				if err != nil {
+					log.Println(err)
+				}
+			}
 			mutex.Unlock()
 
 			mutex.Lock()
-			rw.WriteString(fmt.Sprintf("%s\n", string(bytes)))
+			var sendString string
+			if len(PeerStore) > 0 {
+				sendString = string(bytes) + "zyx" + string(PeerBytes)
+			} else {
+				sendString = string(bytes) + "zyx" + "invalid"
+			}
+			rw.WriteString(fmt.Sprintf("%s\n", sendString))
 			rw.Flush()
 			mutex.Unlock()
 		}
@@ -400,6 +436,11 @@ func main() {
 		// We have a peer ID and a targetAddr so we add it to the peerstore
 		// so LibP2P knows how to contact it
 		host.Peerstore().AddAddr(peerid, targetAddr, pstore.PermanentAddrTTL)
+		log.Println("HOST PEERSTORE")
+		peers := host.Peerstore().PeersWithAddrs()
+		for _, peer := range peers {
+			PeerStore = append(PeerStore, host.Peerstore().Addrs(peer)[0].String())
+		}
 
 		log.Println("opening stream")
 		// make a new stream from host B to host A
