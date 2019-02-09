@@ -48,6 +48,8 @@ var PeerStore []string
 
 var mutex = &sync.Mutex{}
 
+var basicHost host.Host
+
 func stringInSlice(a string, list []string) bool {
 	for _, b := range list {
 		if b == a {
@@ -236,11 +238,50 @@ func handleStream(s net.Stream) {
 }
 
 func readData(rw *bufio.ReadWriter) {
-
+	var connected bool
 	for {
 		str, err := rw.ReadString('\n')
 		if err != nil {
-			log.Println("Lost a stream")
+			log.Println("Lost a stream!")
+			log.Println("Attempting new peers...")
+			connected = false
+			for {
+				for id, peerinfo := range PeerStore {
+					log.Println("Attempting peer: ", string(id))
+					info := strings.Split(peerinfo, "?")
+
+					peerid, err := peer.IDB58Decode(info[0])
+					if err != nil {
+						log.Println("tm1")
+						log.Println(peerinfo)
+						log.Println(len(info))
+						if len(info) == 1 {
+							log.Println("No visible peers remaining. Waiting for connection...")
+							break
+						}
+					}
+					targetAddr, err := ma.NewMultiaddr(info[1])
+					if err != nil {
+						log.Println("tm2")
+						log.Fatalln(err)
+					}
+					err = createStream(peerid, targetAddr, basicHost)
+					if err != nil {
+						log.Println(id)
+						PeerStore[id] = PeerStore[len(PeerStore)-1]
+						PeerStore[len(PeerStore)-1] = ""
+						PeerStore = PeerStore[:len(PeerStore)-1]
+						log.Println(PeerStore)
+					} else {
+						connected = true
+						break
+					}
+
+				}
+				if connected {
+					break
+				}
+			}
 			break
 		}
 
@@ -366,6 +407,28 @@ func writeData(rw *bufio.ReadWriter) {
 
 }
 
+func createStream(peerid peer.ID, multiaddress ma.Multiaddr, funcHost host.Host) error {
+	funcHost.Peerstore().AddAddr(peerid, multiaddress, pstore.PermanentAddrTTL)
+
+	log.Println("opening stream")
+	// make a new stream from host B to host A
+	// it should be handled on host A by the handler we set above because
+	// we use the same /p2p/1.0.0 protocol
+	s, err := funcHost.NewStream(context.Background(), peerid, "/p2p/1.0.0")
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	// Create a buffered stream so that read and writes are non blocking.
+	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
+
+	// Create a thread to read and write data.
+	go writeData(rw)
+	go readData(rw)
+
+	select {} // hang forever
+}
+
 func main() {
 	// Load environment variables
 	err := godotenv.Load("port.env")
@@ -393,22 +456,21 @@ func main() {
 	}
 
 	// Make a host that listens on the given multiaddress
-	host, err := makeBasicHost(*listenF, *seed)
+	basicHost, err = makeBasicHost(*listenF, *seed)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println(host)
 
 	if *target == "" {
 		log.Println("listening for connections")
 		// Set a stream handler on host A. /p2p/1.0.0 is
 		// a user-defined protocol name.
-		host.SetStreamHandler("/p2p/1.0.0", handleStream)
+		basicHost.SetStreamHandler("/p2p/1.0.0", handleStream)
 
 		select {} // hang forever
 		/**** This is where the listener code ends ****/
 	} else {
-		host.SetStreamHandler("/p2p/1.0.0", handleStream)
+		basicHost.SetStreamHandler("/p2p/1.0.0", handleStream)
 
 		// The following code extracts target's peer ID from the
 		// given multiaddress
@@ -435,30 +497,8 @@ func main() {
 
 		// We have a peer ID and a targetAddr so we add it to the peerstore
 		// so LibP2P knows how to contact it
-		host.Peerstore().AddAddr(peerid, targetAddr, pstore.PermanentAddrTTL)
-		log.Println("HOST PEERSTORE")
-		peers := host.Peerstore().PeersWithAddrs()
-		for _, peer := range peers {
-			PeerStore = append(PeerStore, host.Peerstore().Addrs(peer)[0].String())
-		}
-
-		log.Println("opening stream")
-		// make a new stream from host B to host A
-		// it should be handled on host A by the handler we set above because
-		// we use the same /p2p/1.0.0 protocol
-		s, err := host.NewStream(context.Background(), peerid, "/p2p/1.0.0")
-		if err != nil {
-			log.Fatalln(err)
-		}
-		// Create a buffered stream so that read and writes are non blocking.
-		rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
-
-		// Create a thread to read and write data.
-		go writeData(rw)
-		go readData(rw)
-
-		select {} // hang forever
-
+		PeerStore = append(PeerStore, peerid.Pretty()+"?"+targetAddr.String())
+		createStream(peerid, targetAddr, basicHost)
 	}
 
 	// Run the browser localhost
