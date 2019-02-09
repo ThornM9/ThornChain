@@ -213,12 +213,13 @@ func makeBasicHost(listenPort int, randseed int64) (host.Host, error) {
 
 	// build host multiaddress
 	hostAddr, _ := ma.NewMultiaddr(fmt.Sprintf("/ipfs/%s", basicHost.ID().Pretty()))
-	log.Println("-------------------------------------")
-	log.Println(basicHost.Addrs())
-	log.Println("-------------------------------------")
 	// build a full address
 	addr := basicHost.Addrs()[len(basicHost.Addrs())-1]
 	fullAddr := addr.Encapsulate(hostAddr)
+	// add host to the peer store
+	peerString := basicHost.ID().Pretty() + "?" + addr.String()
+	PeerStore = append(PeerStore, peerString)
+	// give connection details in terminal
 	log.Printf("I am %s\n", fullAddr)
 	log.Printf("Now run \"go run main.go -l %d -d %s\" on a different terminal\n", listenPort+1, fullAddr)
 	return basicHost, nil
