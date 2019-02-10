@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -15,6 +17,8 @@ import (
 	mrand "math/rand"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +45,7 @@ type Block struct {
 	Amount    int
 	Hash      string
 	PrevHash  string
+	Validator string
 }
 
 type Peer struct {
@@ -88,6 +93,12 @@ func generateBlock(oldBlock Block, From string, To string, Amount int) (Block, e
 	newBlock.Amount = Amount
 	newBlock.PrevHash = oldBlock.Hash
 	newBlock.Hash = calculateHash(newBlock)
+
+	validator, err := findWinner(newBlock.Hash, PeerStore)
+	if err != nil {
+		log.Println(err)
+	}
+	newBlock.Validator = validator
 
 	return newBlock, nil
 }
@@ -140,9 +151,10 @@ func runLocalHost() error {
 
 func makeMuxRouter() http.Handler {
 	muxRouter := mux.NewRouter()
-	muxRouter.HandleFunc("/blocks", handleGetBlockchain).Methods("GET")
 	muxRouter.HandleFunc("/", handleWriteBlock).Methods("POST")
+	muxRouter.HandleFunc("/blocks", handleGetBlockchain).Methods("GET")
 	muxRouter.HandleFunc("/peers", handleGetPeers).Methods("GET")
+	muxRouter.HandleFunc("/getbalance/{address}", handleGetBalance).Methods("GET")
 	return muxRouter
 }
 
@@ -167,6 +179,13 @@ func handleGetPeers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func handleGetBalance(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	balance := strconv.Itoa(getBalance(vars["address"]))
+	sendString := vars["address"] + ": " + balance
+	io.WriteString(w, sendString)
 }
 
 type Message struct {
@@ -259,6 +278,7 @@ func handleStream(s net.Stream) {
 	// Create a buffer stream for non blocking read and write.
 	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
 
+	go readConsole(rw)
 	go readData(rw)
 	go writeData(rw)
 
@@ -294,7 +314,6 @@ func readData(rw *bufio.ReadWriter) {
 						PeerStore[id] = PeerStore[len(PeerStore)-1]
 						PeerStore[len(PeerStore)-1] = ""
 						PeerStore = PeerStore[:len(PeerStore)-1]
-						log.Println(PeerStore)
 					} else {
 						connected = true
 						break
@@ -335,7 +354,22 @@ func readData(rw *bufio.ReadWriter) {
 			mutex.Lock()
 			// CONSENSUS MECHANISM
 			if len(chain) > len(Blockchain) {
-				Blockchain = chain
+				// If our blockchain is only one block behind the received chain,
+				// then validate the latest block before adding it to our chain.
+				// Otherwise, just copy the whole blockchain
+				if (len(chain) - len(Blockchain)) < 2 {
+					proposedBlock := chain[len(chain)-1]
+					sort.SliceStable(PeerStore, func(i, j int) bool { return PeerStore[i] < PeerStore[j] })
+					winningPeerID, err := findWinner(calculateHash(proposedBlock), PeerStore)
+					if err != nil {
+						log.Println(err)
+					}
+					if winningPeerID == proposedBlock.Validator {
+						Blockchain = chain
+					}
+				} else {
+					Blockchain = chain
+				}
 				bytes, err := json.MarshalIndent(Blockchain, "", "  ")
 				if err != nil {
 					log.Fatal(err)
@@ -349,11 +383,48 @@ func readData(rw *bufio.ReadWriter) {
 	}
 }
 
+func getTotalPeerBalances(ps []string) int {
+	runningSum := 0
+	for _, peer := range ps {
+		split := strings.Split(peer, "?")
+		peerid := split[0]
+		runningSum = runningSum + getBalance(peerid)
+	}
+	return runningSum
+}
+
+func findWinner(blockHash string, ps []string) (string, error) {
+	// generate a random number based on the block hash seed
+	h := sha256.New()
+	io.WriteString(h, blockHash)
+	var seed uint64 = binary.BigEndian.Uint64(h.Sum(nil))
+	mrand.Seed(int64(seed))
+	totalLength := getTotalPeerBalances(ps)
+	log.Println(totalLength)
+	randInt := mrand.Intn(totalLength)
+
+	// using the random integer, loop through the peers until
+	// the running sum is greater than randInt. At this point,
+	// the winner is the current peerid
+	runningSum := 0
+	var winnerID string
+	for _, peer := range ps {
+		split := strings.Split(peer, "?")
+		peerid := split[0]
+		runningSum = runningSum + getBalance(peerid)
+		if runningSum > randInt {
+			winnerID = peerid
+			return winnerID, nil
+		}
+	}
+	err := errors.New("unable to find a winner")
+	return "", err
+}
+
 func writeData(rw *bufio.ReadWriter) {
 
 	go func() {
 		for {
-			time.Sleep(5 * time.Second)
 			mutex.Lock()
 			bytes, err := json.Marshal(Blockchain)
 			if err != nil {
@@ -378,9 +449,13 @@ func writeData(rw *bufio.ReadWriter) {
 			rw.WriteString(fmt.Sprintf("%s\n", sendString))
 			rw.Flush()
 			mutex.Unlock()
+			time.Sleep(5 * time.Second)
 		}
 	}()
 
+}
+
+func readConsole(rw *bufio.ReadWriter) {
 	stdReader := bufio.NewReader(os.Stdin)
 
 	for {
@@ -420,13 +495,13 @@ func writeData(rw *bufio.ReadWriter) {
 			log.Fatal(err)
 		}
 		fmt.Printf("\x1b[32m%s\x1b[0m> ", string(printBytes))
-
-		mutex.Lock()
-		rw.WriteString(fmt.Sprintf("%s\n", string(bytes)))
-		rw.Flush()
-		mutex.Unlock()
+		if rw != nil {
+			mutex.Lock()
+			rw.WriteString(fmt.Sprintf("%s\n", string(bytes)))
+			rw.Flush()
+			mutex.Unlock()
+		}
 	}
-
 }
 
 func createStream(peerid peer.ID, multiaddress ma.Multiaddr, funcHost host.Host) error {
@@ -447,6 +522,7 @@ func createStream(peerid peer.ID, multiaddress ma.Multiaddr, funcHost host.Host)
 	// Create a thread to read and write data.
 	go writeData(rw)
 	go readData(rw)
+	go readConsole(rw)
 
 	// Run the browser localhost
 	log.Println("running http server")
@@ -473,12 +549,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create Genesis block
-	t := time.Now()
-	genesisBlock := Block{0, t.String(), "ThornChain", "Thornton Personal", 1000000, "", ""}
-	spew.Dump(genesisBlock)
-	Blockchain = append(Blockchain, genesisBlock)
-
 	// Set the verbosity of the libp2p logging
 	golog.SetAllLoggers(gologging.INFO)
 
@@ -498,11 +568,21 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Create Genesis block
+	t := time.Now()
+	genesisBlock := Block{0, t.String(), "ThornChain", "Thornton", 1000, "", "", "ThornChain"}
+	Blockchain = append(Blockchain, genesisBlock)
+
 	if *target == "" {
 		log.Println("listening for connections")
 		// Set a stream handler on host A. /p2p/1.0.0 is
 		// a user-defined protocol name.
 		basicHost.SetStreamHandler("/p2p/1.0.0", handleStream)
+
+		Blockchain[0].To = basicHost.ID().Pretty()
+		spew.Dump(Blockchain[0])
+
+		go readConsole(nil)
 
 		// Run the browser localhost
 		log.Println("running http server")
@@ -510,6 +590,7 @@ func main() {
 		select {} // hang forever
 		/**** This is where the listener code ends ****/
 	} else {
+		spew.Dump(genesisBlock)
 		basicHost.SetStreamHandler("/p2p/1.0.0", handleStream)
 
 		// The following code extracts target's peer ID from the
