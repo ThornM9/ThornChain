@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	mrand "math/rand"
@@ -42,6 +43,11 @@ type Block struct {
 	PrevHash  string
 }
 
+type Peer struct {
+	ID      string
+	Address string
+}
+
 var Blockchain []Block
 
 var PeerStore []string
@@ -49,6 +55,8 @@ var PeerStore []string
 var mutex = &sync.Mutex{}
 
 var basicHost host.Host
+
+var templ *template.Template
 
 func stringInSlice(a string, list []string) bool {
 	for _, b := range list {
@@ -107,6 +115,11 @@ func replaceChain(newBlocks []Block) {
 }
 
 func runLocalHost() error {
+	var err error
+	templ, err = templ.ParseGlob("templates/*.html")
+	if err != nil {
+		log.Println(err)
+	}
 	mux := makeMuxRouter()
 	httpAddr := os.Getenv("ADDR")
 	log.Println("Listening on ", os.Getenv("ADDR"))
@@ -127,18 +140,33 @@ func runLocalHost() error {
 
 func makeMuxRouter() http.Handler {
 	muxRouter := mux.NewRouter()
-	muxRouter.HandleFunc("/", handleGetBlockchain).Methods("GET")
+	muxRouter.HandleFunc("/blocks", handleGetBlockchain).Methods("GET")
 	muxRouter.HandleFunc("/", handleWriteBlock).Methods("POST")
+	muxRouter.HandleFunc("/peers", handleGetPeers).Methods("GET")
 	return muxRouter
 }
 
 func handleGetBlockchain(w http.ResponseWriter, r *http.Request) {
-	bytes, err := json.MarshalIndent(Blockchain, "", "  ")
+	err := templ.ExecuteTemplate(w, "blocks.html", Blockchain)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	io.WriteString(w, string(bytes))
+}
+
+func handleGetPeers(w http.ResponseWriter, r *http.Request) {
+	var ps []Peer
+
+	for _, peer := range PeerStore {
+		split := strings.Split(peer, "?")
+		id := split[0]
+		addr := split[1]
+		ps = append(ps, Peer{ID: id, Address: addr})
+	}
+
+	err := templ.ExecuteTemplate(w, "peers.html", ps)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 type Message struct {

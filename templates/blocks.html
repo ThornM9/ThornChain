@@ -1,0 +1,23 @@
+<h1>ThornChain</h1>
+<table>
+    <tr>
+        <th>Index</th>
+        <th>Timestamp</th>
+        <th>From</th>
+        <th>To</th>
+        <th>Amount</th>
+        <th>Hash</th>
+        <th>Previous Hash</th>
+    </tr>
+    {{ range . }}
+    <tr>
+        <td>{{ .Index }}</td>
+        <td>{{ .Timestamp }}</td>
+        <td>{{ .From }}</td>
+        <td>{{ .To }}</td>
+        <td>{{ .Amount }}</td>
+        <td>{{ .Hash }}</td>
+        <td>{{ .PrevHash }}</td>
+    </tr>
+    {{ end }}
+</table>

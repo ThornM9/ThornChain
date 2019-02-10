@@ -1,0 +1,13 @@
+<h1>ThornChain Peers</h1>
+<table>
+    <tr>
+        <th>Peer ID</th>
+        <th>Address</th>
+    </tr>
+    {{ range . }}
+    <tr>
+        <td>{{ .ID }}</td>
+        <td>{{ .Address }}</td>
+    </tr>
+    {{ end }}
+</table>
