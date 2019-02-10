@@ -153,7 +153,6 @@ func handleWriteBlock(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	err := decoder.Decode(&m)
 	log.Println(err)
-	log.Println(m)
 	if err != nil {
 		respondWithJson(w, r, http.StatusBadRequest, r.Body)
 		return
@@ -253,9 +252,6 @@ func readData(rw *bufio.ReadWriter) {
 
 					peerid, err := peer.IDB58Decode(info[0])
 					if err != nil {
-						log.Println("tm1")
-						log.Println(peerinfo)
-						log.Println(len(info))
 						if len(info) == 1 {
 							log.Println("No visible peers remaining. Waiting for connection...")
 							break
@@ -263,12 +259,10 @@ func readData(rw *bufio.ReadWriter) {
 					}
 					targetAddr, err := ma.NewMultiaddr(info[1])
 					if err != nil {
-						log.Println("tm2")
 						log.Fatalln(err)
 					}
 					err = createStream(peerid, targetAddr, basicHost)
 					if err != nil {
-						log.Println(id)
 						PeerStore[id] = PeerStore[len(PeerStore)-1]
 						PeerStore[len(PeerStore)-1] = ""
 						PeerStore = PeerStore[:len(PeerStore)-1]
@@ -292,20 +286,20 @@ func readData(rw *bufio.ReadWriter) {
 		if str != "\n" {
 			chain := make([]Block, 0)
 			newPeerStore := make([]string, 0)
-
 			split := strings.Split(str, "zyx")
 			if err := json.Unmarshal([]byte(split[0]), &chain); err != nil {
 				log.Fatal(err)
 			}
 
-			if split[1] != "invalid\n" {
-				if err := json.Unmarshal([]byte(split[1]), &newPeerStore); err != nil {
-					log.Fatal(err)
-				}
-
-				for _, peer := range newPeerStore {
-					if !stringInSlice(peer, PeerStore) {
-						PeerStore = append(PeerStore, peer)
+			if len(split) > 1 {
+				if split[1] != "invalid\n" {
+					if err := json.Unmarshal([]byte(split[1]), &newPeerStore); err != nil {
+						log.Fatal(err)
+					}
+					for _, peer := range newPeerStore {
+						if !stringInSlice(peer, PeerStore) {
+							PeerStore = append(PeerStore, peer)
+						}
 					}
 				}
 			}
@@ -339,7 +333,6 @@ func writeData(rw *bufio.ReadWriter) {
 			}
 			var PeerBytes []byte
 			if len(PeerStore) > 0 {
-				log.Println(PeerStore)
 				PeerBytes, err = json.Marshal(PeerStore)
 				if err != nil {
 					log.Println(err)
@@ -427,7 +420,22 @@ func createStream(peerid peer.ID, multiaddress ma.Multiaddr, funcHost host.Host)
 	go writeData(rw)
 	go readData(rw)
 
+	// Run the browser localhost
+	log.Println("running http server")
+	runLocalHost()
 	select {} // hang forever
+}
+
+func getBalance(address string) int {
+	balance := 0
+	for _, block := range Blockchain {
+		if address == block.To {
+			balance = balance + block.Amount
+		} else if address == block.From {
+			balance = balance - block.Amount
+		}
+	}
+	return balance
 }
 
 func main() {
@@ -468,6 +476,9 @@ func main() {
 		// a user-defined protocol name.
 		basicHost.SetStreamHandler("/p2p/1.0.0", handleStream)
 
+		// Run the browser localhost
+		log.Println("running http server")
+		runLocalHost()
 		select {} // hang forever
 		/**** This is where the listener code ends ****/
 	} else {
@@ -501,8 +512,4 @@ func main() {
 		PeerStore = append(PeerStore, peerid.Pretty()+"?"+targetAddr.String())
 		createStream(peerid, targetAddr, basicHost)
 	}
-
-	// Run the browser localhost
-	// log.Fatal(runLocalHost())
-
 }
